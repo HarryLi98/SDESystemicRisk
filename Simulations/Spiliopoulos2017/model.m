@@ -1,15 +1,15 @@
 classdef model
-    % Object-oriented approach to model Spiliopoulos
+    % Object-oriented approach to model Spiliopoulos with common-noise
 
     properties
-        alpha   %
-        sig     % 
         dt      % Time increment
         t       % Vector of times from 0 to T by dt
         N       % Number of Banks
         x0      % Initial condition
         x       % Dynamics of N banks
         xbar    % Mean of N banks
+        alpha   % Drift coefficient - scalar or Nx1 vector
+        sig     % Diffusion coefficient - scalar or Nx1 vector
         f       % Drift term - function handle
         g       % Diffusion term - function handle
         opts    % sde_euler options
