@@ -1,6 +1,5 @@
 classdef model
-    % Object-oriented approach to model Spiliopoulos 
-    % with options for common-noise and network structures
+    % Object-oriented approach to model Spiliopoulos with common-noise
 
     properties
         dt      % Time increment
@@ -31,8 +30,8 @@ classdef model
             obj.xbar = zeros(length(obj.t), 1);
             obj.alpha = alpha;
             obj.sig = sig;
-            obj.f = @(t, x) alpha.*(mean(x) - x);
-            obj.g = @(t, x) sig;
+            obj.f = @(t, y) alpha.*(mean(y) - y);
+            obj.g = @(t, y) sig;
             obj.opts = sdeset('RandSeed', 10);
             obj.eta = -0.7;
         end
@@ -42,7 +41,7 @@ classdef model
             obj.opts = sdeset('RandSeed', 1, 'Diagonal', 'no');
             obj.rho = rho;
             obj.D = horzcat(obj.rho*ones(obj.N, 1), sqrt(1-obj.rho^2)*eye(obj.N));
-            obj.g = @(t, x) obj.sig .* obj.D;
+            obj.g = @(t, y) obj.sig .* obj.D;
         end
 
         function obj = erdosrenyi(obj, p)
@@ -53,7 +52,7 @@ classdef model
         end
 
         function obj = network(obj)
-            obj.f = @(t, x) obj.alpha/obj.N .* (obj.A*x - x.*sum(obj.A)');
+            % obj.f = obj.alpha .* @(t, x) 1/obj.N.*(obj.A*x - x.*sum(obj.A)');
         end
 
         function obj = sde_euler(obj)
