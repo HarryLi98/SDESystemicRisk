@@ -17,15 +17,15 @@ classdef model
         eta     % Default level
         rho     % Common-noise parameter
         D       % Common-noise matrix
-        A       % NxN adjancency matrix 
+        A       % NxN adjacency matrix (fixed for all t) 
     end
 
     methods
-        function obj = model(alpha, sig)
+        function obj = model(N, alpha, sig)
             % Initialise variables
             obj.dt = 1e-3;
             obj.t = 0:obj.dt:1;
-            obj.N = 10;
+            obj.N = N;
             obj.x0 = zeros(obj.N, 1); 
             obj.x = zeros(length(obj.t), obj.N);
             obj.xbar = zeros(length(obj.t), 1);
@@ -46,13 +46,61 @@ classdef model
         end
 
         function obj = erdosrenyi(obj, p)
-            obj.A = rand(obj.N, obj.N) < p;
+            % p is probability of aij=aji=1
+            obj.A = rand(obj.N) < p;
             % Make A symmetric
             obj.A = triu(obj.A, 1);
-            obj.A = obj.A + obj.A';
+            obj.A = eye(obj.N) + obj.A + obj.A';
+        end
+
+        function obj = star(obj, n1, n2)
+            % The nodes n1:n2 are fully-connected
+            obj.A = eye(obj.N);
+            obj.A(n1:n2, :) = 1;
+            obj.A(:, n1:n2) = 1;
+        end
+
+        function obj = random_star(obj, p)
+            % Generate star-network, with random nodes being fully-connected
+            idx = find(rand(obj.N, 1) < p);
+            obj.A = eye(obj.N);
+            obj.A(idx, :) = 1;
+            obj.A(:, idx) = 1;
+        end
+
+        function obj = homophily(obj, threshold)
+            function values = f(~, x)
+                A = pdist2(x, x);
+                A(A <= threshold) = 1;
+                A(A > threshold) = 0;
+                % Initialise values
+                values = NaN .* zeros(obj.N, 1);
+                % Compute for j = 1,...,N
+                for j = 1:obj.N
+                    values(j) = 1/obj.N .* A(j, :) * (x - x(j));
+                end
+            end
+            obj.f = @(t, x) obj.alpha/obj.N .* f(t, x);
+        end
+
+        function obj = heterophily(obj, threshold)
+            function values = f(~, x)
+                A = pdist2(x, x);
+                A(A <= threshold) = 0;
+                A(A > threshold) = 1;
+                A = A + eye(obj.N);
+                % Initialise values
+                values = NaN .* zeros(obj.N, 1);
+                % Compute for j = 1,...,N
+                for j = 1:obj.N
+                    values(j) = 1/obj.N .* A(j, :) * (x - x(j));
+                end
+            end
+            obj.f = @(t, x) obj.alpha/obj.N .* f(t, x);
         end
 
         function obj = network(obj)
+            % Drift function for when obj.A is fixed
             obj.f = @(t, x) obj.alpha/obj.N .* (obj.A*x - x.*sum(obj.A)');
         end
 
@@ -61,12 +109,20 @@ classdef model
             obj.x = sde_euler(obj.f, obj.g, obj.t, obj.x0, obj.opts);
         end
 
-        function plot_trajectory(obj)
-            % Plot the trajectory of X and X_bar
+        function plot_trajectory(obj, opt)
+            % Plot the trajectories of X and X_bar
+            arguments
+                obj                
+                opt {mustBeNonempty} = true % Flag to plot individual trajectories
+            end
+
             obj.xbar = mean(obj.x, 2);
-            figure; 
-            plot(obj.t, obj.x, 'k');
-            hold on
+            figure;
+
+            if opt
+                plot(obj.t, obj.x, 'k');
+                hold on
+            end
             % Average Line
             plot(obj.t, obj.xbar, 'green', 'LineWidth', 2)
             hold on
@@ -76,9 +132,14 @@ classdef model
             xlabel('t'); ylabel('X_{t}');
         end
 
-        function plot_loss(obj)
+        function plot_loss(obj, reps)
             % Plot the loss distribution under repeated simulation
-            repeats = 500;
+            arguments
+                obj                
+                reps {mustBeNonempty} = 500 % 
+            end
+
+            repeats = reps;
             n_defaults = zeros(repeats, 1);
 
             if isempty(obj.D)
