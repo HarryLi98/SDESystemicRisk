@@ -18,6 +18,9 @@ classdef model
         rho     % Common-noise parameter
         D       % Common-noise matrix
         A       % NxN adjacency matrix (fixed for all t) 
+        values  % For computing sde_euler
+        sims    % Array of sample paths - (N_T, N, reps) 
+        probfail% Estimated probability of financial system failing
     end
 
     methods
@@ -45,6 +48,35 @@ classdef model
             obj.g = @(t, x) obj.sig .* obj.D;
         end
 
+%         function obj = multiplicative_common_noise(obj, rho, gamma1, gamma2)
+%             % Include multiplicative common noise, as in Giesecke
+%             obj.opts = sdeset('RandSeed', 1, 'Diagonal', 'no');
+%             obj.rho = rho;
+%             % The power of the multiplicative noise makes a big difference.
+%             % Here we use gamma = 0.5, but if we take gamma around 0.79 for
+%             % common noise, it blows up.
+%             obj.D = @(x) horzcat(obj.rho.*ones(obj.N, 1).*(exp(x).^gamma1), sqrt(1-obj.rho^2).*(exp(x).^gamma2).*eye(obj.N));
+%             obj.g = @(t, x) obj.sig .* obj.D(x);
+%         end
+
+        function obj = multiplicative_common_noise(obj, rho, gamma1, gamma2)
+            % Include multiplicative common noise, as in Giesecke
+            obj.opts = sdeset('RandSeed', 1, 'Diagonal', 'no');
+            obj.rho = rho;
+            obj.D = @(x) horzcat(obj.rho.*ones(obj.N, 1).*(x.^gamma1), sqrt(1-obj.rho^2).*(x.^gamma2).*eye(obj.N));
+            obj.g = @(t, x) obj.sig .* obj.D(x);
+        end
+
+        function obj = exp_noise(obj, rho)
+            % Experiment with inverse multiplicative common noise
+            % The lower the reserves, the more volative
+            obj.opts = sdeset('RandSeed', 1, 'Diagonal', 'no');
+            obj.rho = rho;
+            obj.D = @(x) horzcat(obj.rho.*ones(obj.N, 1).*sqrt(exp(-x)), sqrt(1-obj.rho^2).*sqrt(exp(-x)).*eye(obj.N));
+            obj.g = @(t, x) obj.sig .* obj.D(x);
+        end
+
+
         function obj = erdosrenyi(obj, p)
             % p is probability of aij=aji=1
             obj.A = rand(obj.N) < p;
@@ -69,39 +101,58 @@ classdef model
         end
 
         function obj = homophily(obj, threshold)
-            function values = f(~, x)
-                A = pdist2(x, x);
-                A(A <= threshold) = 1;
-                A(A > threshold) = 0;
-                % Initialise values
-                values = NaN .* zeros(obj.N, 1);
-                % Compute for j = 1,...,N
-                for j = 1:obj.N
-                    values(j) = 1/obj.N .* A(j, :) * (x - x(j));
-                end
+            function values = v(~, x)
+                obj.A = pdist2(x, x);
+                obj.A(obj.A <= threshold) = 1;
+                obj.A(obj.A > threshold) = 0;
+                obj.values = (obj.alpha/obj.N) .* (obj.A*x - x.*sum(obj.A)');
+                values = obj.values;
             end
-            obj.f = @(t, x) obj.alpha/obj.N .* f(t, x);
+            obj.f = @(t, x) v(t, x);
         end
 
         function obj = heterophily(obj, threshold)
-            function values = f(~, x)
-                A = pdist2(x, x);
-                A(A <= threshold) = 0;
-                A(A > threshold) = 1;
-                A = A + eye(obj.N);
-                % Initialise values
-                values = NaN .* zeros(obj.N, 1);
-                % Compute for j = 1,...,N
-                for j = 1:obj.N
-                    values(j) = 1/obj.N .* A(j, :) * (x - x(j));
-                end
+            function values = v(~, x)
+                obj.A = pdist2(x, x);
+                obj.A(obj.A <= threshold) = 0;
+                obj.A(obj.A > threshold) = 1;
+                obj.values = (obj.alpha/obj.N) .* (obj.A*x - x.*sum(obj.A)');
+                values = obj.values;
             end
-            obj.f = @(t, x) obj.alpha/obj.N .* f(t, x);
+            obj.f = @(t, x) v(t, x);
         end
 
         function obj = network(obj)
             % Drift function for when obj.A is fixed
             obj.f = @(t, x) obj.alpha/obj.N .* (obj.A*x - x.*sum(obj.A)');
+        end
+
+        % Function that removes bank from network if it defaults
+        function values = update_network(obj, x, threshold)
+            idx = x <= threshold;
+            obj.A(idx, :) = 0;
+            obj.A(:, idx) = 0;
+            obj.values = (obj.alpha/obj.N) .* (obj.A*x - x.*sum(obj.A)');
+            values = obj.values;
+        end
+
+        function obj = adaptive_network(obj, threshold)
+            obj.f = @(t, x) update_network(obj, x, threshold);
+        end
+
+        % Function to remove systemically important banks from the network
+        function values = remove_systemic_banks(obj, x, threshold)
+            n_systemic = sum(obj.alpha == obj.alpha(1));
+            idx = x <= threshold;
+            idx = idx(1:n_systemic);
+            obj.A(idx, :) = 0;
+            obj.A(:, idx) = 0;
+            obj.values = (obj.alpha/obj.N) .* (obj.A*x - x.*sum(obj.A)');
+            values = obj.values;
+        end
+
+        function obj = adaptive_network_2(obj, threshold)
+            obj.f = @(t, x) remove_systemic_banks(obj, x, threshold);
         end
 
         function obj = sde_euler(obj)
@@ -132,15 +183,14 @@ classdef model
             xlabel('t'); ylabel('X_{t}');
         end
 
-        function plot_loss(obj, reps)
-            % Plot the loss distribution under repeated simulation
+        function obj = monte_carlo(obj, reps)
+            % Simulate the sample paths repeatedly
             arguments
-                obj                
-                reps {mustBeNonempty} = 500 % 
+                obj
+                reps {mustBeNonempty} = 500
             end
-
-            repeats = reps;
-            n_defaults = zeros(repeats, 1);
+            
+            simulations = zeros(length(obj.t), obj.N, reps);
 
             if isempty(obj.D)
                 opt = sdeset();
@@ -148,18 +198,42 @@ classdef model
                 opt = sdeset('Diagonal', 'no');
             end
 
-            % Loop
-            for rep = 1:repeats
-               y = sde_euler(obj.f, obj.g, obj.t, obj.x0, opt);
-               n_defaults(rep) = sum(min(y) <= -0.7);
+            parfor rep = 1:reps
+                simulations(:, :, rep) = sde_euler(obj.f, obj.g, obj.t, obj.x0, opt);
+            end
+
+            obj.sims = simulations;
+        
+            % Estimate the probability that the banking system fails
+            % which occurs when obj.xbar <= obj.eta
+            xb = squeeze(min(mean(obj.sims, 2), [], 1));
+            obj.probfail = 1/reps * sum(xb <= obj.eta);
+        end
+
+        function plot_loss(obj)
+            % Plot the loss distribution under repeated simulation
+            arguments
+                obj                
+            end
+
+            n_defaults = squeeze(sum(min(obj.sims, [], 1) <= obj.eta, 2));
+            tbl = tabulate(n_defaults);
+            % Pad the table to include zero if no banks default
+            if tbl(1, 1) > 0
+                tbl = [zeros(1, 3); tbl];
             end
 
             % Plot number of defaults
-            tbl = tabulate(n_defaults);
+            
             figure;
-            plot(tbl(:, 1), tbl(:, 3)/100);
+            n_banks = 0:obj.N;
+            default_rate = tbl(:, 3)/100;
+            if numel(default_rate) < numel(n_banks)
+                default_rate(numel(n_banks)) = 0;
+            end
+            plot(n_banks, default_rate);
             title("Loss distribution")
-            xlabel('Number of defaults'); ylabel('Probability of number of defaults');
+            xlabel('Number of defaults'); ylabel('Probability');
         end
 
     end
